@@ -7,14 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/shopspring/decimal"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
-
-	"github.com/shopspring/decimal"
 )
 
 type rounding struct {
@@ -705,7 +704,7 @@ func (c *ApiClient) V2UserTransactions(currencyPairOrAll string) (response []V2U
 }
 
 // POST https://www.bitstamp.net/api/v2/crypto-transactions/
-func (c *ApiClient) V2CryptoTransactions() (response []V2CryptoTransactionsResponse, err error) {
+func (c *ApiClient) V2CryptoTransactions() (response V2CryptoTransactionsResponse, err error) {
 	err = c.authenticatedPostRequest(&response, "v2/crypto-transactions/", [2]string{"limit", "1000"})
 	if err != nil {
 		return
@@ -714,11 +713,16 @@ func (c *ApiClient) V2CryptoTransactions() (response []V2CryptoTransactionsRespo
 }
 
 type V2CryptoTransactionsResponse struct {
-	Currency           string `json:"currency"`
-	DestinationAddress string `json:"destination_address"`
-	TxID               string `json:"tx_id"`
-	Amount             string `json:"amount"`
-	DateTime           string `json:"date_time"`
+	Deposits    []Transaction `json:"deposits"`
+	Withdrawals []Transaction `json:"withdrawals"`
+}
+
+type Transaction struct {
+	Currency           string  `json:"currency"`
+	DestinationAddress string  `json:"destinationAddress"`
+	TxID               string  `json:"txid"`
+	Amount             float64 `json:"amount"`
+	DateTime           int64   `json:"datetime"`
 }
 
 // Open orders
@@ -766,21 +770,25 @@ type V2OrderStatusResponse struct {
 }
 
 // POST https://www.bitstamp.net/api/{token}_withdrawal
-func (c *ApiClient) V2CryptoWithdrawals(token, address *string, amount *float64,
+func (c *ApiClient) V2CryptoWithdrawals(token, address string, amount float64,
 	memoID, destinationTag string) (response V2CryptoWithdrawalResponse, err error) {
 	params := make([][2]string, 0)
-	params = append(params, [2]string{"amount", fmt.Sprintf("%d", amount)})
-	params = append(params, [2]string{"address", *address})
+	params = append(params, [2]string{"amount", fmt.Sprintf("%f", amount)})
+	params = append(params, [2]string{"address", address})
 	if memoID != "" {
-		params = append(params, [2]string{"memo_id", memoID})
+		params = append(params, [2]string{"memoid", memoID})
 	}
 	if destinationTag != "" {
-		params = append(params, [2]string{"destination_tag", memoID})
+		params = append(params, [2]string{"destinationTag", destinationTag})
 	}
 
-	err = c.authenticatedPostRequest(&response, fmt.Sprintf("v2/%s_withdrawal/", *token), params...)
+	err = c.authenticatedPostRequest(&response, fmt.Sprintf("v2/%s_withdrawal/", token), params...)
 	if err != nil {
 		return
+	}
+
+	if response.Status == "error" {
+		err = fmt.Errorf("error: %v", response.Reason)
 	}
 
 	return
@@ -788,6 +796,8 @@ func (c *ApiClient) V2CryptoWithdrawals(token, address *string, amount *float64,
 
 type V2CryptoWithdrawalResponse struct {
 	WithdrawalID int64 `json:"withdrawal_id"`
+	Status string `json:"status"`
+	Reason interface{} `json:"reason"`
 }
 
 // POST https://www.bitstamp.net/api/v2/{token}_address/
@@ -992,52 +1002,55 @@ type V2MarketOrderResponse struct {
 	Type     string          `json:"type"`
 	Price    decimal.Decimal `json:"price"`
 	Amount   decimal.Decimal `json:"amount"`
-	Error    string          `json:"error"`
 	Status   string          `json:"status"`
 	Reason   interface{}     `json:"reason"`
 }
 
-func (c *ApiClient) v2MarketOrder(side, currencyPair string, amount decimal.Decimal, clOrdId string) (response V2MarketOrderResponse, err error) {
-	urlPath := fmt.Sprintf("/v2/%s/market/%s/", side, currencyPair)
-	url_ := urlMerge(c.domain, urlPath)
-
-	data := c.credentials()
-	data.Set("amount", amount.String())
+func (c *ApiClient) V2BuyMarketOrder(currencyPair string, amount float64, clOrdId string) (response V2MarketOrderResponse, err error) {
+	params := make([][2]string, 0)
+	params = append(params, [2]string{"amount", fmt.Sprintf("%f", amount)})
 	if clOrdId != "" {
-		data.Set("client_order_id", clOrdId)
+		params = append(params, [2]string{"client_order_id", clOrdId})
 	}
 
-	resp, err := http.PostForm(url_, data)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return
-	}
-
-	err = json.Unmarshal(respBody, &response)
+	err = c.authenticatedPostRequest(&response, fmt.Sprintf("/v2/buy/market/%s/", currencyPair), params...)
 	if err != nil {
 		return
 	}
 
 	if response.Status == "error" {
-		err = fmt.Errorf("error placing market %s (for %s): %v", side, amount, response.Reason)
-		return
+		err = fmt.Errorf("error: %v", response.Reason)
 	}
 
 	return
 }
 
-func (c *ApiClient) V2BuyMarketOrder(currencyPair string, amount decimal.Decimal, clOrdId string) (response V2MarketOrderResponse, err error) {
-	return c.v2MarketOrder("buy", currencyPair, amount, clOrdId)
+func (c *ApiClient) V2SellMarketOrder(currencyPair string, amount float64, clOrdId string) (response V2MarketOrderResponse, err error) {
+	params := make([][2]string, 0)
+	params = append(params, [2]string{"amount", fmt.Sprintf("%f", amount)})
+	if clOrdId != "" {
+		params = append(params, [2]string{"client_order_id", clOrdId})
+	}
+
+	err = c.authenticatedPostRequest(&response, fmt.Sprintf("/v2/sell/market/%s/", currencyPair), params...)
+	if err != nil {
+		return
+	}
+
+	if response.Status == "error" {
+		err = fmt.Errorf("error: %v", response.Reason)
+	}
+
+	return
 }
 
-func (c *ApiClient) V2SellMarketOrder(currencyPair string, amount decimal.Decimal, clOrdId string) (response V2MarketOrderResponse, err error) {
-	return c.v2MarketOrder("sell", currencyPair, amount, clOrdId)
-}
+//func (c *ApiClient) V2BuyMarketOrder(currencyPair string, amount decimal.Decimal, clOrdId string) (response V2MarketOrderResponse, err error) {
+//	return c.v2MarketOrder("buy", currencyPair, amount, clOrdId)
+//}
+//
+//func (c *ApiClient) V2SellMarketOrder(currencyPair string, amount decimal.Decimal, clOrdId string) (response V2MarketOrderResponse, err error) {
+//	return c.v2MarketOrder("sell", currencyPair, amount, clOrdId)
+//}
 
 type V2InstantOrderResponse struct {
 	Id       string          `json:"id"`
